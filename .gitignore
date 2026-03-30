@@ -1,0 +1,32 @@
+# macOS noise
+.DS_Store
+
+# Xcode user-specific state
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# Keep the project/workspace itself, but ignore per-user data inside it.
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Build products and local caches
+build/
+DerivedData/
+.build/
+
+# Swift Package Manager local state
+.swiftpm/
+
+# Optional local secret files if they ever appear later.
+# This app stores the Intervals key in the iPhone Keychain, not in the repo.
+.env
+.env.*
+*.secret
+*.secrets

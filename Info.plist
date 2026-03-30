@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Workout Bridge</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AppIconCompassBurn</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconCompassBurn</string>
+			</dict>
+			<key>AppIconHorizonPath</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconHorizonPath</string>
+			</dict>
+			<key>AppIconNeonLoop</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconNeonLoop</string>
+			</dict>
+			<key>AppIconOrbitRing</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconOrbitRing</string>
+			</dict>
+			<key>AppIconSignalCrest</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconSignalCrest</string>
+			</dict>
+			<key>AppIconSplitMarker</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconSplitMarker</string>
+			</dict>
+			<key>AppIconSummitTrack</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconSummitTrack</string>
+			</dict>
+			<key>AppIconTrailGrid</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconTrailGrid</string>
+			</dict>
+			<key>AppIconWaveTempo</key>
+			<dict>
+				<key>AppIconReferenceName</key>
+				<string>AppIconWaveTempo</string>
+			</dict>
+		</dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Workout Bridge</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Workout Bridge reads your Apple Health workouts and wellness metrics so it can upload them to Intervals.icu.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Workout Bridge does not write Health data, but iOS still expects a HealthKit usage string when the capability is enabled.</string>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>
