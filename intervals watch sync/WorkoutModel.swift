@@ -66,6 +66,8 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
     var availableIntervalsStreamTypes: [String]
     var lastStreamInspectionAt: Date?
     var lastStreamInspectionError: String?
+    var workoutEffortScore: Double?
+    var estimatedWorkoutEffortScore: Double?
 
     var id: UUID { healthKitUUID }
 
@@ -86,6 +88,23 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         default:
             return nil
         }
+    }
+
+    var effectiveWorkoutEffortScore: Double? {
+        let effortScore = workoutEffortScore ?? estimatedWorkoutEffortScore
+        guard let effortScore, effortScore > 0 else {
+            return nil
+        }
+
+        return min(max(effortScore, 1), 10)
+    }
+
+    var intervalsSessionRPE: Int? {
+        effectiveWorkoutEffortScore.map { Int($0.rounded()) }
+    }
+
+    var intervalsPerceivedExertion: Double? {
+        effectiveWorkoutEffortScore
     }
 
     var averageHeartRate: Double? {
@@ -127,7 +146,9 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         acceptedExtraStreamTypes: [String],
         availableIntervalsStreamTypes: [String],
         lastStreamInspectionAt: Date?,
-        lastStreamInspectionError: String?
+        lastStreamInspectionError: String?,
+        workoutEffortScore: Double? = nil,
+        estimatedWorkoutEffortScore: Double? = nil
     ) {
         self.healthKitUUID = healthKitUUID
         self.startDate = startDate
@@ -154,6 +175,8 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         self.availableIntervalsStreamTypes = availableIntervalsStreamTypes
         self.lastStreamInspectionAt = lastStreamInspectionAt
         self.lastStreamInspectionError = lastStreamInspectionError
+        self.workoutEffortScore = workoutEffortScore
+        self.estimatedWorkoutEffortScore = estimatedWorkoutEffortScore
     }
 
     enum CodingKeys: String, CodingKey {
@@ -182,6 +205,8 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         case availableIntervalsStreamTypes
         case lastStreamInspectionAt
         case lastStreamInspectionError
+        case workoutEffortScore
+        case estimatedWorkoutEffortScore
     }
 
     init(from decoder: Decoder) throws {
@@ -211,6 +236,8 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         availableIntervalsStreamTypes = try container.decodeIfPresent([String].self, forKey: .availableIntervalsStreamTypes) ?? []
         lastStreamInspectionAt = try container.decodeIfPresent(Date.self, forKey: .lastStreamInspectionAt)
         lastStreamInspectionError = try container.decodeIfPresent(String.self, forKey: .lastStreamInspectionError)
+        workoutEffortScore = try container.decodeIfPresent(Double.self, forKey: .workoutEffortScore)
+        estimatedWorkoutEffortScore = try container.decodeIfPresent(Double.self, forKey: .estimatedWorkoutEffortScore)
     }
 }
 

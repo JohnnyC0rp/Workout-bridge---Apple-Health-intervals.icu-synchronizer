@@ -85,7 +85,19 @@ struct IntervalsAPIStatusSnapshot {
 }
 
 private struct IntervalsActivityUpdatePayload: Encodable {
-    let type: String
+    let type: String?
+    let perceivedExertion: Double?
+    let sessionRPE: Int?
+
+    var hasContent: Bool {
+        type != nil || perceivedExertion != nil || sessionRPE != nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case perceivedExertion = "perceived_exertion"
+        case sessionRPE = "session_rpe"
+    }
 }
 
 final class IntervalsApiClient {
@@ -362,9 +374,23 @@ final class IntervalsApiClient {
         }
     }
 
-    func updateActivityType(activityID: String, type: String) async throws {
+    func updateActivity(
+        activityID: String,
+        type: String? = nil,
+        perceivedExertion: Double? = nil,
+        sessionRPE: Int? = nil
+    ) async throws {
         guard IntervalsConfiguration.isConfigured else {
             throw ClientError.missingConfiguration
+        }
+
+        let payload = IntervalsActivityUpdatePayload(
+            type: type,
+            perceivedExertion: perceivedExertion,
+            sessionRPE: sessionRPE
+        )
+        guard payload.hasContent else {
+            return
         }
 
         let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)")
@@ -373,11 +399,22 @@ final class IntervalsApiClient {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        request.httpBody = try encoder.encode(IntervalsActivityUpdatePayload(type: type))
+        request.httpBody = try encoder.encode(payload)
+
+        var updatedFields: [String] = []
+        if let type {
+            updatedFields.append("type=\(type)")
+        }
+        if let perceivedExertion {
+            updatedFields.append("perceived_exertion=\(perceivedExertion)")
+        }
+        if let sessionRPE {
+            updatedFields.append("session_rpe=\(sessionRPE)")
+        }
 
         let (data, httpResponse) = try await send(
             request,
-            summary: "Update Intervals activity \(activityID) type to \(type)"
+            summary: "Update Intervals activity \(activityID) metadata (\(updatedFields.joined(separator: ", ")))"
         )
 
         guard (200...299).contains(httpResponse.statusCode) else {

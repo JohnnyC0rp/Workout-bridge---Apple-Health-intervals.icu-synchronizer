@@ -1080,17 +1080,20 @@ final class HealthKitManager: ObservableObject {
         var postUploadIssues: [PostUploadSyncIssue] = []
 
         if let activityID {
-            if let intervalsActivityType = builtWorkout.intervalsActivityTypeOverride {
-                do {
-                    try await apiClient.updateActivityType(activityID: activityID, type: intervalsActivityType)
-                } catch {
-                    postUploadIssues.append(
-                        PostUploadSyncIssue(
-                            userMessage: "Activity type update failed for \(builtWorkout.displayName).",
-                            logMessage: "Workout uploaded, but activity type update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
-                        )
+            do {
+                try await apiClient.updateActivity(
+                    activityID: activityID,
+                    type: builtWorkout.intervalsActivityTypeOverride,
+                    perceivedExertion: builtWorkout.intervalsPerceivedExertion,
+                    sessionRPE: builtWorkout.intervalsSessionRPE
+                )
+            } catch {
+                postUploadIssues.append(
+                    PostUploadSyncIssue(
+                        userMessage: "Activity metadata update failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but activity metadata update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
                     )
-                }
+                )
             }
 
             do {
@@ -1150,6 +1153,11 @@ final class HealthKitManager: ObservableObject {
         return workoutStore.workout(with: builtWorkout.healthKitUUID) ?? builtWorkout
     }
 
+    private struct WorkoutEffortScores: Sendable {
+        let actual: Double?
+        let estimated: Double?
+    }
+
     private func workoutHeartRatePoints(for workout: HKWorkout, predicate: NSPredicate) async throws -> [SamplePoint] {
         let unit = HKUnit.count().unitDivided(by: .minute())
         let workoutLinkedPoints = try await quantityPoints(
@@ -1171,6 +1179,46 @@ final class HealthKitManager: ObservableObject {
 
         // Strength sessions sometimes lose the workout association even though the watch recorded HR just fine.
         return mergeDistinctSamplePoints(workoutLinkedPoints + overlappingPoints)
+    }
+
+    private func workoutEffortScores(for workout: HKWorkout) async throws -> WorkoutEffortScores {
+        guard #available(iOS 18.0, *) else {
+            return WorkoutEffortScores(actual: nil, estimated: nil)
+        }
+
+        let predicate = HKQuery.predicateForWorkoutEffortSamplesRelated(workout: workout, activity: nil)
+        async let actual = mostRecentWorkoutEffortValue(identifier: .workoutEffortScore, predicate: predicate)
+        async let estimated = mostRecentWorkoutEffortValue(identifier: .estimatedWorkoutEffortScore, predicate: predicate)
+
+        // Prefer the true effort score when Apple has one; the estimate is our backup singer.
+        let actualScore = try await actual
+        let estimatedScore = try await estimated
+
+        return WorkoutEffortScores(
+            actual: actualScore,
+            estimated: estimatedScore
+        )
+    }
+
+    private func mostRecentWorkoutEffortValue(
+        identifier: HKQuantityTypeIdentifier,
+        predicate: NSPredicate
+    ) async throws -> Double? {
+        guard #available(iOS 18.0, *),
+              let quantityType = HKObjectType.quantityType(forIdentifier: identifier) else {
+            return nil
+        }
+
+        let samples = try await fetchSamples(
+            sampleType: quantityType,
+            predicate: predicate,
+            limit: 1,
+            sortDescriptors: [
+                NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
+            ]
+        )
+
+        return (samples.first as? HKQuantitySample)?.quantity.doubleValue(for: HKUnit.appleEffortScore())
     }
 
     private func makeStoredWorkout(from workout: HKWorkout, existing: WorkoutModel?, autoUploadEligible: Bool) -> WorkoutModel {
@@ -1268,6 +1316,7 @@ final class HealthKitManager: ObservableObject {
             unit: .count(),
             predicate: predicate
         )
+        async let effortScores = workoutEffortScores(for: workout)
         async let route = routePoints(predicate: predicate)
 
         async let optionalSeries = optionalWorkoutSeries(predicate: predicate)
@@ -1280,6 +1329,7 @@ final class HealthKitManager: ObservableObject {
         let swimmingDistancePoints = try await swimmingDistance
         let stepCountPoints = try await stepCount
         let flightsClimbedPoints = try await flightsClimbed
+        let workoutEffortScores = try await effortScores
         let routePoints = try await route
         let optionalSeriesPoints = try await optionalSeries
 
@@ -1320,6 +1370,8 @@ final class HealthKitManager: ObservableObject {
         builtWorkout.totalElevationGainMeters = computedSeries.1
         builtWorkout.metadata = metadata
         builtWorkout.timeSeries = computedSeries.0
+        builtWorkout.workoutEffortScore = workoutEffortScores.actual
+        builtWorkout.estimatedWorkoutEffortScore = workoutEffortScores.estimated
         builtWorkout.autoUploadEligible = seed.autoUploadEligible
         builtWorkout.uploadState = .pending
         builtWorkout.lastUploadError = nil
@@ -3152,6 +3204,12 @@ final class HealthKitManager: ObservableObject {
 
         if #available(iOS 17.0, *) {
             [HKQuantityTypeIdentifier.cyclingCadence, .cyclingPower]
+                .compactMap(HKObjectType.quantityType(forIdentifier:))
+                .forEach { types.insert($0) }
+        }
+
+        if #available(iOS 18.0, *) {
+            [HKQuantityTypeIdentifier.workoutEffortScore, .estimatedWorkoutEffortScore]
                 .compactMap(HKObjectType.quantityType(forIdentifier:))
                 .forEach { types.insert($0) }
         }
