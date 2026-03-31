@@ -78,6 +78,26 @@ struct IntervalsListedActivity: Decodable {
     }
 }
 
+struct IntervalsListedEvent: Decodable {
+    let id: Int
+    let category: String?
+    let type: String?
+    let name: String?
+    let startDateLocal: String?
+    let movingTime: Int?
+    let loadTarget: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case category
+        case type
+        case name
+        case startDateLocal = "start_date_local"
+        case movingTime = "moving_time"
+        case loadTarget = "load_target"
+    }
+}
+
 struct IntervalsAPIStatusSnapshot {
     let checkedAt: Date
     let latencyMilliseconds: Int
@@ -86,15 +106,17 @@ struct IntervalsAPIStatusSnapshot {
 
 private struct IntervalsActivityUpdatePayload: Encodable {
     let type: String?
+    let pairedEventID: Int?
     let perceivedExertion: Double?
     let sessionRPE: Int?
 
     var hasContent: Bool {
-        type != nil || perceivedExertion != nil || sessionRPE != nil
+        type != nil || pairedEventID != nil || perceivedExertion != nil || sessionRPE != nil
     }
 
     enum CodingKeys: String, CodingKey {
         case type
+        case pairedEventID = "paired_event_id"
         case perceivedExertion = "perceived_exertion"
         case sessionRPE = "session_rpe"
     }
@@ -377,6 +399,7 @@ final class IntervalsApiClient {
     func updateActivity(
         activityID: String,
         type: String? = nil,
+        pairedEventID: Int? = nil,
         perceivedExertion: Double? = nil,
         sessionRPE: Int? = nil
     ) async throws {
@@ -386,6 +409,7 @@ final class IntervalsApiClient {
 
         let payload = IntervalsActivityUpdatePayload(
             type: type,
+            pairedEventID: pairedEventID,
             perceivedExertion: perceivedExertion,
             sessionRPE: sessionRPE
         )
@@ -404,6 +428,9 @@ final class IntervalsApiClient {
         var updatedFields: [String] = []
         if let type {
             updatedFields.append("type=\(type)")
+        }
+        if let pairedEventID {
+            updatedFields.append("paired_event_id=\(pairedEventID)")
         }
         if let perceivedExertion {
             updatedFields.append("perceived_exertion=\(perceivedExertion)")
@@ -457,6 +484,47 @@ final class IntervalsApiClient {
 
         let decoder = JSONDecoder()
         return try decoder.decode([IntervalsFetchedStream].self, from: data)
+    }
+
+    func listEvents(
+        oldest: Date,
+        newest: Date,
+        categories: [String]? = nil,
+        limit: Int? = nil
+    ) async throws -> [IntervalsListedEvent] {
+        guard IntervalsConfiguration.isConfigured else {
+            throw ClientError.missingConfiguration
+        }
+
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "oldest", value: Self.listDateFormatter.string(from: oldest)),
+            URLQueryItem(name: "newest", value: Self.listDateFormatter.string(from: newest))
+        ]
+        if let categories, !categories.isEmpty {
+            queryItems.append(
+                URLQueryItem(name: "category", value: categories.joined(separator: ","))
+            )
+        }
+        if let limit {
+            queryItems.append(URLQueryItem(name: "limit", value: String(limit)))
+        }
+
+        var components = URLComponents(
+            url: athleteEventsURL(),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = queryItems
+
+        let request = try makeRequest(url: components.url!, method: "GET")
+        let (data, httpResponse) = try await send(request, summary: "List Intervals calendar events")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw ClientError.server(statusCode: httpResponse.statusCode, message: message)
+        }
+
+        let decoder = JSONDecoder()
+        return try decoder.decode([IntervalsListedEvent].self, from: data)
     }
 
     func listActivities(oldest: Date, newest: Date, limit: Int = 5000) async throws -> [IntervalsListedActivity] {
@@ -618,6 +686,10 @@ final class IntervalsApiClient {
 
     private func athleteWellnessURL() -> URL {
         IntervalsConfiguration.baseURL.appending(path: "athlete/\(AppSettingsStorage.normalizedAthleteID())/wellness-bulk")
+    }
+
+    private func athleteEventsURL() -> URL {
+        IntervalsConfiguration.baseURL.appending(path: "athlete/\(AppSettingsStorage.normalizedAthleteID())/events")
     }
 
     private func makeMultipartBody(boundary: String, fileName: String, fileData: Data, mimeType: String) -> Data {

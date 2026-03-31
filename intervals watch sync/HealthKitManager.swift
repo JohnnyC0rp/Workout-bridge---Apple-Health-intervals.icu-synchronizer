@@ -1070,7 +1070,8 @@ final class HealthKitManager: ObservableObject {
         shouldUploadWellness: Bool
     ) async throws -> WorkoutModel {
         let builtWorkout = prepared.workout
-        let uploadParams = workoutUploadParameters(for: builtWorkout)
+        let pairedEventID = try? await matchedIntervalsPlannedEventID(for: builtWorkout)
+        let uploadParams = workoutUploadParameters(for: builtWorkout, pairedEventID: pairedEventID)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
         let uploadResponse = try await apiClient.uploadWorkoutFile(prepared.fileURL, params: uploadParams)
@@ -1084,14 +1085,28 @@ final class HealthKitManager: ObservableObject {
                 try await apiClient.updateActivity(
                     activityID: activityID,
                     type: builtWorkout.intervalsActivityTypeOverride,
+                    pairedEventID: pairedEventID
+                )
+            } catch {
+                postUploadIssues.append(
+                    PostUploadSyncIssue(
+                        userMessage: "Activity type or pairing update failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but activity type or pairing update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                    )
+                )
+            }
+
+            do {
+                try await apiClient.updateActivity(
+                    activityID: activityID,
                     perceivedExertion: builtWorkout.intervalsPerceivedExertion,
                     sessionRPE: builtWorkout.intervalsSessionRPE
                 )
             } catch {
                 postUploadIssues.append(
                     PostUploadSyncIssue(
-                        userMessage: "Activity metadata update failed for \(builtWorkout.displayName).",
-                        logMessage: "Workout uploaded, but activity metadata update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                        userMessage: "Activity effort update failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but activity effort update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
                     )
                 )
             }
@@ -1658,6 +1673,76 @@ final class HealthKitManager: ObservableObject {
         params["description"] = description
 
         return params
+    }
+
+    private func workoutUploadParameters(for workout: WorkoutModel, pairedEventID: Int?) -> [String: String] {
+        var params = workoutUploadParameters(for: workout)
+        if let pairedEventID {
+            params["paired_event_id"] = String(pairedEventID)
+        }
+
+        return params
+    }
+
+    private func matchedIntervalsPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
+        guard let targetType = workout.intervalsActivityTypeOverride else {
+            return nil
+        }
+
+        let workoutDay = Calendar.autoupdatingCurrent.startOfDay(for: workout.startDate)
+        let events = try await apiClient.listEvents(
+            oldest: workoutDay,
+            newest: workoutDay,
+            categories: ["WORKOUT"],
+            limit: 25
+        )
+        let compatibleTypeKeys = compatibleIntervalsEventTypeKeys(for: targetType)
+        let targetTypeKey = targetType.normalizedIntervalsTypeKey
+        let workoutDuration = Int(workout.duration.rounded())
+
+        let candidates = events.filter { event in
+            guard let eventType = event.type else {
+                return false
+            }
+
+            return compatibleTypeKeys.contains(eventType.normalizedIntervalsTypeKey)
+        }
+
+        guard !candidates.isEmpty else {
+            return nil
+        }
+
+        return candidates.min { lhs, rhs in
+            plannedEventMatchScore(
+                for: lhs,
+                targetTypeKey: targetTypeKey,
+                workoutDuration: workoutDuration
+            ) < plannedEventMatchScore(
+                for: rhs,
+                targetTypeKey: targetTypeKey,
+                workoutDuration: workoutDuration
+            )
+        }?.id
+    }
+
+    private func plannedEventMatchScore(
+        for event: IntervalsListedEvent,
+        targetTypeKey: String,
+        workoutDuration: Int
+    ) -> (Int, Int, Int) {
+        let eventTypeKey = (event.type ?? "").normalizedIntervalsTypeKey
+        let typePenalty = eventTypeKey == targetTypeKey ? 0 : 1
+        let durationPenalty = event.movingTime.map { abs($0 - workoutDuration) } ?? 3_600
+        return (typePenalty, durationPenalty, event.id)
+    }
+
+    private func compatibleIntervalsEventTypeKeys(for targetType: String) -> Set<String> {
+        switch targetType.normalizedIntervalsTypeKey {
+        case "weighttraining", "hiit":
+            return ["workout", targetType.normalizedIntervalsTypeKey]
+        default:
+            return [targetType.normalizedIntervalsTypeKey]
+        }
     }
 
     private func uploadAdditionalStreamsIfPossible(for workout: WorkoutModel, activityID: String) async throws {
@@ -3251,6 +3336,14 @@ final class HealthKitManager: ObservableObject {
 
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+}
+
+private extension String {
+    var normalizedIntervalsTypeKey: String {
+        lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
     }
 }
 
