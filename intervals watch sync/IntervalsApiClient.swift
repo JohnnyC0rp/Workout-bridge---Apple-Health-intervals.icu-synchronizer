@@ -84,6 +84,10 @@ struct IntervalsAPIStatusSnapshot {
     let athleteID: String
 }
 
+private struct IntervalsActivityUpdatePayload: Encodable {
+    let type: String
+}
+
 final class IntervalsApiClient {
     enum ClientError: LocalizedError {
         case missingConfiguration
@@ -350,6 +354,30 @@ final class IntervalsApiClient {
         let (data, httpResponse) = try await send(
             request,
             summary: "Upload \(streams.count) extra activity stream(s) to \(activityID)"
+        )
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw ClientError.server(statusCode: httpResponse.statusCode, message: message)
+        }
+    }
+
+    func updateActivityType(activityID: String, type: String) async throws {
+        guard IntervalsConfiguration.isConfigured else {
+            throw ClientError.missingConfiguration
+        }
+
+        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)")
+        var request = try makeRequest(url: url, method: "PUT")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        request.httpBody = try encoder.encode(IntervalsActivityUpdatePayload(type: type))
+
+        let (data, httpResponse) = try await send(
+            request,
+            summary: "Update Intervals activity \(activityID) type to \(type)"
         )
 
         guard (200...299).contains(httpResponse.statusCode) else {

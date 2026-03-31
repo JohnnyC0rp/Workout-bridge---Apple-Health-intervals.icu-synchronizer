@@ -77,6 +77,17 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         workoutType
     }
 
+    var intervalsActivityTypeOverride: String? {
+        switch workoutType.normalizedWorkoutTypeKey {
+        case "weighttraining", "strength":
+            return "WeightTraining"
+        case "hiit":
+            return "HiiT"
+        default:
+            return nil
+        }
+    }
+
     var averageHeartRate: Double? {
         let samples = timeSeries.compactMap(\.heartRate)
         guard !samples.isEmpty else { return nil }
@@ -200,6 +211,14 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         availableIntervalsStreamTypes = try container.decodeIfPresent([String].self, forKey: .availableIntervalsStreamTypes) ?? []
         lastStreamInspectionAt = try container.decodeIfPresent(Date.self, forKey: .lastStreamInspectionAt)
         lastStreamInspectionError = try container.decodeIfPresent(String.self, forKey: .lastStreamInspectionError)
+    }
+}
+
+private extension String {
+    var normalizedWorkoutTypeKey: String {
+        lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
     }
 }
 

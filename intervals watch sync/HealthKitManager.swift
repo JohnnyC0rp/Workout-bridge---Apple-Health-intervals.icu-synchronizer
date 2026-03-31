@@ -123,6 +123,11 @@ final class HealthKitManager: ObservableObject {
         let fileURL: URL
     }
 
+    private struct PostUploadSyncIssue {
+        let userMessage: String
+        let logMessage: String
+    }
+
     private struct SeriesCursor: Sendable {
         enum Mode {
             case latest
@@ -1072,15 +1077,33 @@ final class HealthKitManager: ObservableObject {
         let activityID = uploadResponse.primaryActivityID
         let requestedExtraStreams = requestedExtraStreamTypes(for: builtWorkout)
         var streamInspectionError: String?
+        var postUploadIssues: [PostUploadSyncIssue] = []
 
         if let activityID {
+            if let intervalsActivityType = builtWorkout.intervalsActivityTypeOverride {
+                do {
+                    try await apiClient.updateActivityType(activityID: activityID, type: intervalsActivityType)
+                } catch {
+                    postUploadIssues.append(
+                        PostUploadSyncIssue(
+                            userMessage: "Activity type update failed for \(builtWorkout.displayName).",
+                            logMessage: "Workout uploaded, but activity type update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                        )
+                    )
+                }
+            }
+
             do {
                 setProgress(label: extraStreamsLabel, fraction: extraStreamsFraction)
                 try await uploadAdditionalStreamsIfPossible(for: builtWorkout, activityID: activityID)
             } catch {
                 streamInspectionError = error.localizedDescription
-                lastSyncError = "Workout uploaded, but extra stream sync failed for \(builtWorkout.displayName): \(error.localizedDescription)"
-                showRequestBanner(message: "Extra stream sync failed for \(builtWorkout.displayName).", style: .error)
+                postUploadIssues.append(
+                    PostUploadSyncIssue(
+                        userMessage: "Extra stream sync failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but extra stream sync failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                    )
+                )
             }
 
             do {
@@ -1112,6 +1135,11 @@ final class HealthKitManager: ObservableObject {
             )
         }
 
+        if let firstIssue = postUploadIssues.first {
+            lastSyncError = firstIssue.logMessage
+            showRequestBanner(message: firstIssue.userMessage, style: .error)
+        }
+
         workoutStore.markUploadSucceeded(for: builtWorkout.healthKitUUID, activityID: activityID)
 
         if shouldUploadWellness {
@@ -1120,6 +1148,29 @@ final class HealthKitManager: ObservableObject {
         }
 
         return workoutStore.workout(with: builtWorkout.healthKitUUID) ?? builtWorkout
+    }
+
+    private func workoutHeartRatePoints(for workout: HKWorkout, predicate: NSPredicate) async throws -> [SamplePoint] {
+        let unit = HKUnit.count().unitDivided(by: .minute())
+        let workoutLinkedPoints = try await quantityPoints(
+            identifier: .heartRate,
+            unit: unit,
+            predicate: predicate
+        )
+
+        let overlapPredicate = HKQuery.predicateForSamples(
+            withStart: workout.startDate,
+            end: workout.endDate,
+            options: []
+        )
+        let overlappingPoints = try await quantityPoints(
+            identifier: .heartRate,
+            unit: unit,
+            predicate: overlapPredicate
+        )
+
+        // Strength sessions sometimes lose the workout association even though the watch recorded HR just fine.
+        return mergeDistinctSamplePoints(workoutLinkedPoints + overlappingPoints)
     }
 
     private func makeStoredWorkout(from workout: HKWorkout, existing: WorkoutModel?, autoUploadEligible: Bool) -> WorkoutModel {
@@ -1181,11 +1232,7 @@ final class HealthKitManager: ObservableObject {
         let totalEnergyKilocalories = workout.totalEnergyBurned?.doubleValue(for: .kilocalorie())
         let metadata = stringify(metadata: workout.metadata)
 
-        async let heartRate = quantityPoints(
-            identifier: .heartRate,
-            unit: HKUnit.count().unitDivided(by: .minute()),
-            predicate: predicate
-        )
+        async let heartRate = workoutHeartRatePoints(for: workout, predicate: predicate)
         async let activeEnergy = quantityPoints(
             identifier: .activeEnergyBurned,
             unit: .kilocalorie(),
@@ -1531,6 +1578,19 @@ final class HealthKitManager: ObservableObject {
         return (speedMetersPerSecond / strideLengthMeters) * 60.0
     }
 
+    private func mergeDistinctSamplePoints(_ points: [SamplePoint]) -> [SamplePoint] {
+        guard !points.isEmpty else {
+            return []
+        }
+
+        var mergedByTimestamp: [Date: SamplePoint] = [:]
+        for point in points {
+            mergedByTimestamp[point.date] = point
+        }
+
+        return mergedByTimestamp.values.sorted { $0.date < $1.date }
+    }
+
     private func workoutUploadParameters(for workout: WorkoutModel) -> [String: String] {
         var params: [String: String] = [
             "name": "\(workout.workoutType) \(workout.startDate.formatted(date: .abbreviated, time: .shortened))",
@@ -1549,8 +1609,14 @@ final class HealthKitManager: ObservableObject {
     }
 
     private func uploadAdditionalStreamsIfPossible(for workout: WorkoutModel, activityID: String) async throws {
-        let activityTimes = try await apiClient.fetchActivityTimeStream(activityID: activityID)
-        let streams = intervalsStreams(for: workout, activityTimes: activityTimes)
+        let remoteActivityTimes = try await apiClient.fetchActivityTimeStream(activityID: activityID)
+        let useSyntheticTimeBase = remoteActivityTimes.isEmpty
+        let activityTimes = useSyntheticTimeBase ? syntheticActivityTimeStream(for: workout) : remoteActivityTimes
+        let streams = intervalsStreams(
+            for: workout,
+            activityTimes: activityTimes,
+            includeTimeStream: useSyntheticTimeBase
+        )
         guard !streams.isEmpty else {
             return
         }
@@ -1558,13 +1624,35 @@ final class HealthKitManager: ObservableObject {
         try await apiClient.uploadActivityStreams(streams, activityID: activityID)
     }
 
-    private func intervalsStreams(for workout: WorkoutModel, activityTimes: [Double]) -> [IntervalsActivityStream] {
+    private func intervalsStreams(
+        for workout: WorkoutModel,
+        activityTimes: [Double],
+        includeTimeStream: Bool = false
+    ) -> [IntervalsActivityStream] {
         let trackPoints = TCXWorkoutExporter.normalizedTrackpoints(for: workout)
         guard !trackPoints.isEmpty, !activityTimes.isEmpty else {
             return []
         }
 
         var streams: [IntervalsActivityStream] = []
+
+        if includeTimeStream {
+            streams.append(IntervalsActivityStream(type: "time", data: activityTimes))
+        }
+
+        let heartRate = alignedStreamData(
+            activityTimes: activityTimes,
+            workout: workout,
+            trackPoints: trackPoints
+        ) { $0.heartRate }
+        if heartRate.contains(where: { $0 != nil }) {
+            streams.append(
+                IntervalsActivityStream(
+                    type: "heartrate",
+                    data: heartRate
+                )
+            )
+        }
 
         let strideLength = alignedStreamData(
             activityTimes: activityTimes,
@@ -1607,6 +1695,33 @@ final class HealthKitManager: ObservableObject {
         }
 
         return streams
+    }
+
+    private func syntheticActivityTimeStream(for workout: WorkoutModel) -> [Double] {
+        let rawTimes = TCXWorkoutExporter.normalizedTrackpoints(for: workout)
+            .map { max($0.timestamp.timeIntervalSince(workout.startDate), 0) }
+
+        guard !rawTimes.isEmpty else {
+            return []
+        }
+
+        var timeline = rawTimes
+        if timeline.first.map({ $0 > 0.0001 }) ?? false {
+            timeline.insert(0, at: 0)
+        }
+
+        let workoutDuration = max(workout.duration, timeline.last ?? 0)
+        if timeline.last.map({ abs($0 - workoutDuration) > 0.0001 }) ?? true {
+            timeline.append(workoutDuration)
+        }
+
+        return timeline.reduce(into: [Double]()) { partialResult, value in
+            guard partialResult.last.map({ abs($0 - value) < 0.0001 }) != true else {
+                return
+            }
+
+            partialResult.append(value)
+        }
     }
 
     private func transformedCustomStreamValue(_ rawValue: Double, for metricKey: String) -> Double {
@@ -3086,8 +3201,16 @@ private extension HKWorkoutActivityType {
         switch self {
         case .cycling:
             return "Ride"
+        case .elliptical:
+            return "Elliptical"
+        case .functionalStrengthTraining, .traditionalStrengthTraining:
+            return "Weight Training"
         case .hiking:
             return "Hike"
+        case .highIntensityIntervalTraining:
+            return "HIIT"
+        case .mixedCardio:
+            return "Mixed Cardio"
         case .rowing:
             return "Row"
         case .running:
