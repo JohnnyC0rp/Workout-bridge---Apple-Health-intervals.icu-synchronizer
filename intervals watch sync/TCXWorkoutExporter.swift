@@ -14,7 +14,7 @@ enum TCXWorkoutExporter {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter
     }()
-    nonisolated(unsafe) fileprivate static let posixLocale = Locale(identifier: "en_US_POSIX")
+    fileprivate static let posixLocale = Locale(identifier: "en_US_POSIX")
 
     nonisolated static func export(workout: WorkoutModel, to directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

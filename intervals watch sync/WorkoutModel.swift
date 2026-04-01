@@ -90,8 +90,32 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
-    var intervalsPlannedEventType: String {
-        intervalsActivityTypeOverride ?? workoutType
+    var isIndoorWorkout: Bool {
+        let indoorMetadataKeys = [
+            "HKIndoorWorkout",
+            "HKMetadataKeyIndoorWorkout",
+            "_HKPrivateMetadataKeyIndoorWorkout",
+            "IndoorWorkout"
+        ]
+
+        for key in indoorMetadataKeys {
+            guard let rawValue = metadata[key]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() else {
+                continue
+            }
+
+            switch rawValue {
+            case "1", "true", "yes":
+                return true
+            case "0", "false", "no":
+                return false
+            default:
+                continue
+            }
+        }
+
+        return false
     }
 
     var effectiveWorkoutEffortScore: Double? {

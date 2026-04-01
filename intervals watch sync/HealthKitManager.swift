@@ -1070,8 +1070,7 @@ final class HealthKitManager: ObservableObject {
         shouldUploadWellness: Bool
     ) async throws -> WorkoutModel {
         let builtWorkout = prepared.workout
-        let pairedEventID = try? await matchedIntervalsPlannedEventID(for: builtWorkout)
-        let uploadParams = workoutUploadParameters(for: builtWorkout, pairedEventID: pairedEventID)
+        let uploadParams = workoutUploadParameters(for: builtWorkout)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
         let uploadResponse = try await apiClient.uploadWorkoutFile(prepared.fileURL, params: uploadParams)
@@ -1084,14 +1083,13 @@ final class HealthKitManager: ObservableObject {
             do {
                 try await apiClient.updateActivity(
                     activityID: activityID,
-                    type: builtWorkout.intervalsActivityTypeOverride,
-                    pairedEventID: pairedEventID
+                    type: builtWorkout.intervalsActivityTypeOverride
                 )
             } catch {
                 postUploadIssues.append(
                     PostUploadSyncIssue(
-                        userMessage: "Activity type or pairing update failed for \(builtWorkout.displayName).",
-                        logMessage: "Workout uploaded, but activity type or pairing update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                        userMessage: "Activity type update failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but activity type update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
                     )
                 )
             }
@@ -1356,11 +1354,13 @@ final class HealthKitManager: ObservableObject {
         extraSeries["basalEnergyKilocalories"] = basalEnergyPoints
         extraSeries["stepCount"] = stepCountPoints
         extraSeries["flightsClimbed"] = flightsClimbedPoints
+        let isIndoorWorkout = seed.isIndoorWorkout
 
-        let computedSeries = try await Task.detached(priority: .userInitiated) {
+        let computedSeries = await Task.detached(priority: .userInitiated) {
             let records = Self.mergeSeries(
                 startDate: startDate,
                 endDate: endDate,
+                isIndoorWorkout: isIndoorWorkout,
                 totalDistanceMeters: totalDistanceMeters,
                 heartRate: heartRatePoints,
                 distance: mergedDistancePoints,
@@ -1458,6 +1458,7 @@ final class HealthKitManager: ObservableObject {
     nonisolated private static func mergeSeries(
         startDate: Date,
         endDate: Date,
+        isIndoorWorkout: Bool,
         totalDistanceMeters: Double?,
         heartRate: [SamplePoint],
         distance: [SamplePoint],
@@ -1585,7 +1586,11 @@ final class HealthKitManager: ObservableObject {
             records[lastIndex].distanceMeters = totalDistanceMeters
         }
 
-        stabilizeSpeedAndPace(in: &records)
+        if isIndoorWorkout {
+            stabilizeIndoorSpeedAndPace(in: &records)
+        } else {
+            deriveMissingSpeedAndPace(in: &records)
+        }
 
         return records
     }
@@ -1598,7 +1603,36 @@ final class HealthKitManager: ObservableObject {
         return speedMetersPerSecond
     }
 
-    nonisolated private static func stabilizeSpeedAndPace(in records: inout [WorkoutModel.TimeSeriesRecord]) {
+    nonisolated private static func deriveMissingSpeedAndPace(in records: inout [WorkoutModel.TimeSeriesRecord]) {
+        for index in records.indices {
+            let sanitizedSpeed = sanitizedRecordedSpeed(records[index].speedMetersPerSecond)
+            records[index].speedMetersPerSecond = sanitizedSpeed
+            records[index].paceSecondsPerKilometer = sanitizedSpeed.map { 1000.0 / $0 }
+        }
+
+        for index in records.indices.dropFirst() where records[index].speedMetersPerSecond == nil {
+            let previous = records[index - 1]
+            let current = records[index]
+
+            guard let previousDistance = previous.distanceMeters,
+                  let currentDistance = current.distanceMeters else {
+                continue
+            }
+
+            let elapsed = current.timestamp.timeIntervalSince(previous.timestamp)
+            let deltaDistance = currentDistance - previousDistance
+
+            guard elapsed > 0, deltaDistance >= 0 else {
+                continue
+            }
+
+            let derivedSpeed = deltaDistance / elapsed
+            records[index].speedMetersPerSecond = derivedSpeed
+            records[index].paceSecondsPerKilometer = derivedSpeed > 0 ? 1000.0 / derivedSpeed : nil
+        }
+    }
+
+    nonisolated private static func stabilizeIndoorSpeedAndPace(in records: inout [WorkoutModel.TimeSeriesRecord]) {
         guard !records.isEmpty else {
             return
         }
@@ -1725,73 +1759,6 @@ final class HealthKitManager: ObservableObject {
         params["description"] = description
 
         return params
-    }
-
-    private func workoutUploadParameters(for workout: WorkoutModel, pairedEventID: Int?) -> [String: String] {
-        var params = workoutUploadParameters(for: workout)
-        if let pairedEventID {
-            params["paired_event_id"] = String(pairedEventID)
-        }
-
-        return params
-    }
-
-    private func matchedIntervalsPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
-        let targetType = workout.intervalsPlannedEventType
-        let workoutDay = Calendar.autoupdatingCurrent.startOfDay(for: workout.startDate)
-        let events = try await apiClient.listEvents(
-            oldest: workoutDay,
-            newest: workoutDay,
-            categories: ["WORKOUT"],
-            limit: 25
-        )
-        let compatibleTypeKeys = compatibleIntervalsEventTypeKeys(for: targetType)
-        let targetTypeKey = targetType.normalizedIntervalsTypeKey
-        let workoutDuration = Int(workout.duration.rounded())
-
-        let candidates = events.filter { event in
-            guard let eventType = event.type else {
-                return false
-            }
-
-            return compatibleTypeKeys.contains(eventType.normalizedIntervalsTypeKey)
-        }
-
-        guard !candidates.isEmpty else {
-            return nil
-        }
-
-        return candidates.min { lhs, rhs in
-            plannedEventMatchScore(
-                for: lhs,
-                targetTypeKey: targetTypeKey,
-                workoutDuration: workoutDuration
-            ) < plannedEventMatchScore(
-                for: rhs,
-                targetTypeKey: targetTypeKey,
-                workoutDuration: workoutDuration
-            )
-        }?.id
-    }
-
-    private func plannedEventMatchScore(
-        for event: IntervalsListedEvent,
-        targetTypeKey: String,
-        workoutDuration: Int
-    ) -> (Int, Int, Int) {
-        let eventTypeKey = (event.type ?? "").normalizedIntervalsTypeKey
-        let typePenalty = eventTypeKey == targetTypeKey ? 0 : 1
-        let durationPenalty = event.movingTime.map { abs($0 - workoutDuration) } ?? 3_600
-        return (typePenalty, durationPenalty, event.id)
-    }
-
-    private func compatibleIntervalsEventTypeKeys(for targetType: String) -> Set<String> {
-        switch targetType.normalizedIntervalsTypeKey {
-        case "weighttraining", "hiit":
-            return ["workout", targetType.normalizedIntervalsTypeKey]
-        default:
-            return [targetType.normalizedIntervalsTypeKey]
-        }
     }
 
     private func uploadAdditionalStreamsIfPossible(for workout: WorkoutModel, activityID: String) async throws {
@@ -3385,14 +3352,6 @@ final class HealthKitManager: ObservableObject {
 
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
-    }
-}
-
-private extension String {
-    var normalizedIntervalsTypeKey: String {
-        lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .joined()
     }
 }
 
