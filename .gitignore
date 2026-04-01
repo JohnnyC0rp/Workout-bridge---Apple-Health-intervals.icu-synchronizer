@@ -24,6 +24,9 @@ DerivedData/
 # Swift Package Manager local state
 .swiftpm/
 
+# Local Xcode overrides that should never churn the project file
+*.local.xcconfig
+
 # Optional local secret files if they ever appear later.
 # This app stores the Intervals key in the iPhone Keychain, not in the repo.
 .env

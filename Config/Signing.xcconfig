@@ -1,0 +1,5 @@
+// Shared signing settings for the app target.
+// Local overrides stay out of git so project.pbxproj stops picking fights with signing.
+#include? "Signing.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(inherited)
