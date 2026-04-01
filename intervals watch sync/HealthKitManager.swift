@@ -257,11 +257,11 @@ final class HealthKitManager: ObservableObject {
         }
     }
 
-    func forceSync() async {
-        await syncWorkouts(reason: "manual")
+    func forceSync(reason: String = "manual") async {
+        await syncWorkouts(reason: reason)
     }
 
-    func refreshHomeDashboard() async {
+    func refreshHomeDashboard(reason: String = "manual") async {
         if let dashboardRefreshTask {
             await dashboardRefreshTask.value
             return
@@ -281,7 +281,7 @@ final class HealthKitManager: ObservableObject {
             }
 
             if self.authorizationState == .ready {
-                await self.forceSync()
+                await self.forceSync(reason: self.dashboardSyncReason(for: reason))
             }
 
             self.refreshWellnessStatusSummary()
@@ -289,6 +289,14 @@ final class HealthKitManager: ObservableObject {
 
         dashboardRefreshTask = task
         await task.value
+    }
+
+    private func dashboardSyncReason(for requestedReason: String) -> String {
+        // Preserve launch-only maintenance for the first startup refresh.
+        // Otherwise the app acts surprised that "launch" means launch. Rude.
+        requestedReason == "launch" && !hasCompletedLaunchMaintenance
+            ? "launch"
+            : "manual"
     }
 
     func checkIntervalsAPIStatusOnLaunchIfNeeded() async {

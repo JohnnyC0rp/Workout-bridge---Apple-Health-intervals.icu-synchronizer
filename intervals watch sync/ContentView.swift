@@ -152,7 +152,7 @@ struct ContentView: View {
 
             // This intentionally mirrors the manual pull-to-refresh path.
             try? await Task.sleep(nanoseconds: 350_000_000)
-            await healthKitManager.refreshHomeDashboard()
+            await healthKitManager.refreshHomeDashboard(reason: "launch")
         }
     }
 
