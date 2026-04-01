@@ -90,6 +90,10 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    var requiresManualPlannedEventPairing: Bool {
+        isIndoorWorkout || intervalsActivityTypeOverride != nil
+    }
+
     var isIndoorWorkout: Bool {
         let indoorMetadataKeys = [
             "HKIndoorWorkout",

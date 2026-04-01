@@ -1070,6 +1070,9 @@ final class HealthKitManager: ObservableObject {
         shouldUploadWellness: Bool
     ) async throws -> WorkoutModel {
         let builtWorkout = prepared.workout
+        let pairedEventID = builtWorkout.requiresManualPlannedEventPairing
+            ? (try? await matchedIntervalsPlannedEventID(for: builtWorkout))
+            : nil
         let uploadParams = workoutUploadParameters(for: builtWorkout)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
@@ -1092,6 +1095,22 @@ final class HealthKitManager: ObservableObject {
                         logMessage: "Workout uploaded, but activity type update failed for \(builtWorkout.displayName): \(error.localizedDescription)"
                     )
                 )
+            }
+
+            if let pairedEventID {
+                do {
+                    try await apiClient.updateActivity(
+                        activityID: activityID,
+                        pairedEventID: pairedEventID
+                    )
+                } catch {
+                    postUploadIssues.append(
+                        PostUploadSyncIssue(
+                            userMessage: "Planned workout pairing failed for \(builtWorkout.displayName).",
+                            logMessage: "Workout uploaded, but explicit planned workout pairing failed for \(builtWorkout.displayName): \(error.localizedDescription)"
+                        )
+                    )
+                }
             }
 
             do {
@@ -1759,6 +1778,44 @@ final class HealthKitManager: ObservableObject {
         params["description"] = description
 
         return params
+    }
+
+    private func matchedIntervalsPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
+        let workoutDay = Calendar.autoupdatingCurrent.startOfDay(for: workout.startDate)
+        let events = try await apiClient.listEvents(
+            oldest: workoutDay,
+            newest: workoutDay,
+            categories: ["WORKOUT"],
+            limit: 25
+        )
+        let targetTypeKey = plannedEventTargetTypeKey(for: workout)
+        let workoutDuration = Int(workout.duration.rounded())
+
+        let candidates = events.filter { event in
+            plannedEventTypeKey(for: event) == targetTypeKey
+        }
+
+        guard !candidates.isEmpty else {
+            return nil
+        }
+
+        return candidates.min {
+            plannedEventMatchScore(for: $0, workoutDuration: workoutDuration)
+                < plannedEventMatchScore(for: $1, workoutDuration: workoutDuration)
+        }?.id
+    }
+
+    private func plannedEventTargetTypeKey(for workout: WorkoutModel) -> String {
+        (workout.intervalsActivityTypeOverride ?? workout.workoutType).normalizedIntervalsTypeKey
+    }
+
+    private func plannedEventTypeKey(for event: IntervalsListedEvent) -> String {
+        (event.type ?? "").normalizedIntervalsTypeKey
+    }
+
+    private func plannedEventMatchScore(for event: IntervalsListedEvent, workoutDuration: Int) -> (Int, Int) {
+        let durationPenalty = event.movingTime.map { abs($0 - workoutDuration) } ?? 3_600
+        return (durationPenalty, event.id)
     }
 
     private func uploadAdditionalStreamsIfPossible(for workout: WorkoutModel, activityID: String) async throws {
@@ -3383,5 +3440,13 @@ private extension HKWorkoutActivityType {
         default:
             return "Workout"
         }
+    }
+}
+
+private extension String {
+    var normalizedIntervalsTypeKey: String {
+        lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
     }
 }
