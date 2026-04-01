@@ -90,6 +90,10 @@ struct WorkoutModel: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    var intervalsPlannedEventType: String {
+        intervalsActivityTypeOverride ?? workoutType
+    }
+
     var effectiveWorkoutEffortScore: Double? {
         let effortScore = workoutEffortScore ?? estimatedWorkoutEffortScore
         guard let effortScore, effortScore > 0 else {

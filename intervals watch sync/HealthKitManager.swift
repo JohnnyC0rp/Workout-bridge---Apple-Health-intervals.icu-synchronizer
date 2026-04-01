@@ -1516,7 +1516,7 @@ final class HealthKitManager: ObservableObject {
             }
 
             let distanceMeters = distanceCursor.currentValue ?? latestRoute?.cumulativeDistance
-            let rawSpeed = metrics["speedMetersPerSecond"] ?? latestRoute?.speed
+            let rawSpeed = sanitizedRecordedSpeed(metrics["speedMetersPerSecond"] ?? latestRoute?.speed)
             let power = metrics["powerWatts"] ?? metrics["cyclingPowerWatts"]
             let cadenceRPM = cadenceCursor.currentValue
                 ?? metrics["cyclingCadenceRPM"]
@@ -1585,28 +1585,80 @@ final class HealthKitManager: ObservableObject {
             records[lastIndex].distanceMeters = totalDistanceMeters
         }
 
-        for index in records.indices.dropFirst() where records[index].speedMetersPerSecond == nil {
-            let previous = records[index - 1]
-            let current = records[index]
-
-            guard let previousDistance = previous.distanceMeters,
-                  let currentDistance = current.distanceMeters else {
-                continue
-            }
-
-            let elapsed = current.timestamp.timeIntervalSince(previous.timestamp)
-            let deltaDistance = currentDistance - previousDistance
-
-            guard elapsed > 0, deltaDistance >= 0 else {
-                continue
-            }
-
-            let derivedSpeed = deltaDistance / elapsed
-            records[index].speedMetersPerSecond = derivedSpeed
-            records[index].paceSecondsPerKilometer = derivedSpeed > 0 ? 1000.0 / derivedSpeed : nil
-        }
+        stabilizeSpeedAndPace(in: &records)
 
         return records
+    }
+
+    nonisolated private static func sanitizedRecordedSpeed(_ speedMetersPerSecond: Double?) -> Double? {
+        guard let speedMetersPerSecond, speedMetersPerSecond.isFinite, speedMetersPerSecond > 0 else {
+            return nil
+        }
+
+        return speedMetersPerSecond
+    }
+
+    nonisolated private static func stabilizeSpeedAndPace(in records: inout [WorkoutModel.TimeSeriesRecord]) {
+        guard !records.isEmpty else {
+            return
+        }
+
+        let plateauCarryForwardLimit: TimeInterval = 5
+        let distanceEpsilon = 0.001
+
+        for index in records.indices {
+            let sanitizedSpeed = sanitizedRecordedSpeed(records[index].speedMetersPerSecond)
+            records[index].speedMetersPerSecond = sanitizedSpeed
+            records[index].paceSecondsPerKilometer = sanitizedSpeed.map { 1000.0 / $0 }
+        }
+
+        var lastDistanceAnchorIndex = records.indices.first(where: { records[$0].distanceMeters != nil })
+        var lastPositiveSpeed: Double?
+
+        for index in records.indices.dropFirst() {
+            guard let currentDistance = records[index].distanceMeters else {
+                continue
+            }
+
+            if lastDistanceAnchorIndex == nil {
+                lastDistanceAnchorIndex = index
+            }
+
+            if let currentSpeed = records[index].speedMetersPerSecond {
+                if let anchorIndex = lastDistanceAnchorIndex,
+                   let anchorDistance = records[anchorIndex].distanceMeters,
+                   currentDistance > anchorDistance + distanceEpsilon {
+                    lastDistanceAnchorIndex = index
+                }
+                lastPositiveSpeed = currentSpeed
+                continue
+            }
+
+            guard let anchorIndex = lastDistanceAnchorIndex,
+                  let anchorDistance = records[anchorIndex].distanceMeters else {
+                continue
+            }
+
+            let elapsedSinceAnchor = records[index].timestamp.timeIntervalSince(records[anchorIndex].timestamp)
+            let deltaDistance = currentDistance - anchorDistance
+
+            if elapsedSinceAnchor > 0, deltaDistance > distanceEpsilon {
+                let derivedSpeed = deltaDistance / elapsedSinceAnchor
+                records[index].speedMetersPerSecond = derivedSpeed
+                records[index].paceSecondsPerKilometer = 1000.0 / derivedSpeed
+                lastPositiveSpeed = derivedSpeed
+                lastDistanceAnchorIndex = index
+                continue
+            }
+
+            if abs(deltaDistance) <= distanceEpsilon,
+               let lastPositiveSpeed,
+               elapsedSinceAnchor <= plateauCarryForwardLimit {
+                // Short plateaus usually mean sparse distance samples, not that Johnny teleported onto a couch.
+                records[index].speedMetersPerSecond = lastPositiveSpeed
+                records[index].paceSecondsPerKilometer = 1000.0 / lastPositiveSpeed
+            }
+        }
     }
 
     nonisolated private static func totalElevationGain(from routePoints: [RoutePoint]) -> Double? {
@@ -1685,10 +1737,7 @@ final class HealthKitManager: ObservableObject {
     }
 
     private func matchedIntervalsPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
-        guard let targetType = workout.intervalsActivityTypeOverride else {
-            return nil
-        }
-
+        let targetType = workout.intervalsPlannedEventType
         let workoutDay = Calendar.autoupdatingCurrent.startOfDay(for: workout.startDate)
         let events = try await apiClient.listEvents(
             oldest: workoutDay,

@@ -14,6 +14,7 @@ enum TCXWorkoutExporter {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter
     }()
+    nonisolated(unsafe) fileprivate static let posixLocale = Locale(identifier: "en_US_POSIX")
 
     nonisolated static func export(workout: WorkoutModel, to directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -320,12 +321,12 @@ enum TCXWorkoutExporter {
 
 private extension Double {
     var decimalString: String {
-        String(format: "%.3f", self)
+        String(format: "%.3f", locale: TCXWorkoutExporter.posixLocale, self)
     }
 
     var coordinateDecimalString: String {
         // GPS deserves special treatment; six decimals is plenty precise without inflating TCX size into drama.
-        String(format: "%.6f", self)
+        String(format: "%.6f", locale: TCXWorkoutExporter.posixLocale, self)
     }
 }
 
