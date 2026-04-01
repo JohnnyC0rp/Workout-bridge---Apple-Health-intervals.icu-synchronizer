@@ -192,7 +192,7 @@ final class HealthKitManager: ObservableObject {
     private var hasStarted = false
     private var preserveNextWellnessStatusSummary = false
 
-    private let launchWellnessBackfillMaxDays = 3
+    private let launchWellnessRecentDays = 3
     private let walkingCleanupLookbackDays = 3650
 
     init(
@@ -2365,24 +2365,15 @@ final class HealthKitManager: ObservableObject {
             return
         }
 
-        guard let latestWorkoutDate = workoutStore.latestNonWalkWorkoutDate else {
-            return
-        }
-
-        let daysSinceLatestWorkout = max(normalizedDayRange(from: latestWorkoutDate, to: Date()).count - 1, 0)
-        if daysSinceLatestWorkout > launchWellnessBackfillMaxDays {
-            let latestDay = Self.localDayFormatter.string(from: latestWorkoutDate)
-            activeAlert = AppAlertMessage(
-                title: "Wellness upload skipped",
-                message: "The latest workout was on \(latestDay), which is \(daysSinceLatestWorkout) day(s) ago. Launch wellness sync stops here to avoid lag. Open Bulk Upload to backfill wellness manually."
-            )
-            preserveNextWellnessStatusSummary = true
-            lastWellnessStatusMessage = "Launch wellness sync skipped because \(daysSinceLatestWorkout) day(s) would need backfill. Use Bulk Upload."
-            return
-        }
+        let calendar = Calendar.autoupdatingCurrent
+        let currentDay = calendar.startOfDay(for: Date())
+        let daysToInclude = max(launchWellnessRecentDays - 1, 0)
+        let startDay = calendar.date(byAdding: .day, value: -daysToInclude, to: currentDay) ?? currentDay
 
         do {
-            let summary = try await uploadWellnessRange(from: latestWorkoutDate, to: Date(), force: false)
+            // Always refresh a short rolling window on launch.
+            // Three days is enough to be useful without making startup emotionally exhausting.
+            let summary = try await uploadWellnessRange(from: startDay, to: currentDay, force: false)
             if summary.uploadedDays > 0 {
                 preserveNextWellnessStatusSummary = true
                 lastWellnessStatusMessage = "Uploaded wellness for \(summary.uploadedDays) recent day(s) on launch."
