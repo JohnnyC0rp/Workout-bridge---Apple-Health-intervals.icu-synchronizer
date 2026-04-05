@@ -1,6 +1,9 @@
 # macOS noise
 .DS_Store
 
+# Local agent onboarding doc
+AGENTS.md
+
 # Xcode user-specific state
 xcuserdata/
 *.xcuserstate
