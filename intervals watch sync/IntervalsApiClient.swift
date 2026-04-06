@@ -86,6 +86,7 @@ struct IntervalsListedEvent: Decodable {
     let startDateLocal: String?
     let movingTime: Int?
     let loadTarget: Int?
+    let pairedActivityID: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -95,6 +96,7 @@ struct IntervalsListedEvent: Decodable {
         case startDateLocal = "start_date_local"
         case movingTime = "moving_time"
         case loadTarget = "load_target"
+        case pairedActivityID = "paired_activity_id"
     }
 }
 
@@ -377,7 +379,8 @@ final class IntervalsApiClient {
             return
         }
 
-        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)/streams")
+        let normalizedActivityID = normalizedActivityID(activityID)
+        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(normalizedActivityID)/streams")
         var request = try makeRequest(url: url, method: "PUT")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -387,7 +390,7 @@ final class IntervalsApiClient {
 
         let (data, httpResponse) = try await send(
             request,
-            summary: "Upload \(streams.count) extra activity stream(s) to \(activityID)"
+            summary: "Upload \(streams.count) extra activity stream(s) to \(normalizedActivityID)"
         )
 
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -417,7 +420,8 @@ final class IntervalsApiClient {
             return
         }
 
-        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)")
+        let normalizedActivityID = normalizedActivityID(activityID)
+        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(normalizedActivityID)")
         var request = try makeRequest(url: url, method: "PUT")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -441,7 +445,7 @@ final class IntervalsApiClient {
 
         let (data, httpResponse) = try await send(
             request,
-            summary: "Update Intervals activity \(activityID) metadata (\(updatedFields.joined(separator: ", ")))"
+            summary: "Update Intervals activity \(normalizedActivityID) metadata (\(updatedFields.joined(separator: ", ")))"
         )
 
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -462,7 +466,7 @@ final class IntervalsApiClient {
         }
 
         var components = URLComponents(
-            url: IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)/streams"),
+            url: IntervalsConfiguration.baseURL.appending(path: "activity/\(normalizedActivityID(activityID))/streams"),
             resolvingAgainstBaseURL: false
         )!
         if let types, !types.isEmpty {
@@ -472,9 +476,10 @@ final class IntervalsApiClient {
         }
 
         let request = try makeRequest(url: components.url!, method: "GET")
+        let normalizedActivityID = normalizedActivityID(activityID)
         let summary = types?.isEmpty == false
-            ? "Fetch activity streams for \(activityID) [\(types!.joined(separator: ", "))]"
-            : "Fetch all activity streams for \(activityID)"
+            ? "Fetch activity streams for \(normalizedActivityID) [\(types!.joined(separator: ", "))]"
+            : "Fetch all activity streams for \(normalizedActivityID)"
         let (data, httpResponse) = try await send(request, summary: summary)
 
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -559,9 +564,10 @@ final class IntervalsApiClient {
             throw ClientError.missingConfiguration
         }
 
-        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(activityID)")
+        let normalizedActivityID = normalizedActivityID(activityID)
+        let url = IntervalsConfiguration.baseURL.appending(path: "activity/\(normalizedActivityID)")
         let request = try makeRequest(url: url, method: "DELETE")
-        let (data, httpResponse) = try await send(request, summary: "Delete Intervals activity \(activityID)")
+        let (data, httpResponse) = try await send(request, summary: "Delete Intervals activity \(normalizedActivityID)")
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "Unknown error"
@@ -690,6 +696,19 @@ final class IntervalsApiClient {
 
     private func athleteEventsURL() -> URL {
         IntervalsConfiguration.baseURL.appending(path: "athlete/\(AppSettingsStorage.normalizedAthleteID())/events")
+    }
+
+    private func normalizedActivityID(_ activityID: String) -> String {
+        let trimmed = activityID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return trimmed
+        }
+
+        if trimmed.lowercased().hasPrefix("i") {
+            return "i" + trimmed.dropFirst()
+        }
+
+        return "i\(trimmed)"
     }
 
     private func makeMultipartBody(boundary: String, fileName: String, fileData: Data, mimeType: String) -> Data {

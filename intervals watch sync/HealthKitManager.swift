@@ -69,6 +69,13 @@ final class HealthKitManager: ObservableObject {
         let available: [String]
     }
 
+    private struct PlannedEventMatch: Sendable {
+        let id: Int
+        let candidateCount: Int
+        let bestDurationPenalty: Int
+        let runnerUpDurationPenalty: Int?
+    }
+
     private struct WeightedSleepInterval: Sendable {
         let interval: DateInterval
         let stageWeight: Double
@@ -1078,9 +1085,7 @@ final class HealthKitManager: ObservableObject {
         shouldUploadWellness: Bool
     ) async throws -> WorkoutModel {
         let builtWorkout = prepared.workout
-        let pairedEventID = builtWorkout.requiresManualPlannedEventPairing
-            ? (try? await matchedIntervalsPlannedEventID(for: builtWorkout))
-            : nil
+        let pairedEventID = try? await explicitPlannedEventID(for: builtWorkout)
         let uploadParams = workoutUploadParameters(for: builtWorkout)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
@@ -1788,7 +1793,23 @@ final class HealthKitManager: ObservableObject {
         return params
     }
 
-    private func matchedIntervalsPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
+    private func explicitPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
+        guard let match = try await matchedIntervalsPlannedEvent(for: workout) else {
+            return nil
+        }
+
+        if workout.requiresManualPlannedEventPairing {
+            return match.id
+        }
+
+        let singleCandidateIsCloseEnough = match.candidateCount == 1 && match.bestDurationPenalty <= 45 * 60
+        let clearlyBestOfMultiple = match.bestDurationPenalty <= 15 * 60 &&
+            ((match.runnerUpDurationPenalty ?? Int.max) - match.bestDurationPenalty) >= 20 * 60
+
+        return (singleCandidateIsCloseEnough || clearlyBestOfMultiple) ? match.id : nil
+    }
+
+    private func matchedIntervalsPlannedEvent(for workout: WorkoutModel) async throws -> PlannedEventMatch? {
         let workoutDay = Calendar.autoupdatingCurrent.startOfDay(for: workout.startDate)
         let events = try await apiClient.listEvents(
             oldest: workoutDay,
@@ -1800,17 +1821,30 @@ final class HealthKitManager: ObservableObject {
         let workoutDuration = Int(workout.duration.rounded())
 
         let candidates = events.filter { event in
-            plannedEventTypeKey(for: event) == targetTypeKey
+            plannedEventTypeKey(for: event) == targetTypeKey &&
+                event.pairedActivityID == nil
         }
 
         guard !candidates.isEmpty else {
             return nil
         }
 
-        return candidates.min {
+        let rankedCandidates = candidates.sorted {
             plannedEventMatchScore(for: $0, workoutDuration: workoutDuration)
                 < plannedEventMatchScore(for: $1, workoutDuration: workoutDuration)
-        }?.id
+        }
+        let bestCandidate = rankedCandidates[0]
+        let bestPenalty = plannedEventDurationPenalty(for: bestCandidate, workoutDuration: workoutDuration)
+        let runnerUpPenalty = rankedCandidates.dropFirst().first.map {
+            plannedEventDurationPenalty(for: $0, workoutDuration: workoutDuration)
+        }
+
+        return PlannedEventMatch(
+            id: bestCandidate.id,
+            candidateCount: rankedCandidates.count,
+            bestDurationPenalty: bestPenalty,
+            runnerUpDurationPenalty: runnerUpPenalty
+        )
     }
 
     private func plannedEventTargetTypeKey(for workout: WorkoutModel) -> String {
@@ -1822,8 +1856,11 @@ final class HealthKitManager: ObservableObject {
     }
 
     private func plannedEventMatchScore(for event: IntervalsListedEvent, workoutDuration: Int) -> (Int, Int) {
-        let durationPenalty = event.movingTime.map { abs($0 - workoutDuration) } ?? 3_600
-        return (durationPenalty, event.id)
+        (plannedEventDurationPenalty(for: event, workoutDuration: workoutDuration), event.id)
+    }
+
+    private func plannedEventDurationPenalty(for event: IntervalsListedEvent, workoutDuration: Int) -> Int {
+        event.movingTime.map { abs($0 - workoutDuration) } ?? 3_600
     }
 
     private func uploadAdditionalStreamsIfPossible(for workout: WorkoutModel, activityID: String) async throws {
@@ -1966,17 +2003,22 @@ final class HealthKitManager: ObservableObject {
     }
 
     private func inspectRemoteExtraStreams(for workout: WorkoutModel, activityID: String) async throws -> ExtraStreamInspection {
-        let remoteStreams = try await apiClient.fetchActivityStreams(activityID: activityID)
+        let requested = requestedExtraStreamTypes(for: workout)
+        async let remoteStreamsTask = apiClient.fetchActivityStreams(activityID: activityID)
+        // Intervals occasionally plays hide-and-seek with stride_length in the unfiltered list.
+        let requestedStreams = requested.isEmpty
+            ? []
+            : try await apiClient.fetchActivityStreams(activityID: activityID, types: requested)
+        let remoteStreams = try await remoteStreamsTask
         let available = Array(
             Set(
-                remoteStreams.flatMap { stream in
+                (remoteStreams + requestedStreams).flatMap { stream in
                     [stream.type, stream.name]
                         .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
                 }
             )
         ).sorted()
-        let requested = requestedExtraStreamTypes(for: workout)
         let availableSet = Set(available)
         let accepted = requested.filter { availableSet.contains($0) }.sorted()
         return ExtraStreamInspection(requested: requested, accepted: accepted, available: available)
