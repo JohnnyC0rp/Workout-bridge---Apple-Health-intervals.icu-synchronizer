@@ -1095,11 +1095,26 @@ final class HealthKitManager: ObservableObject {
         let uploadParams = workoutUploadParameters(for: builtWorkout)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
-        let uploadResponse = try await apiClient.uploadWorkoutFile(prepared.fileURL, params: uploadParams)
-        let activityID = uploadResponse.primaryActivityID
         let requestedExtraStreams = requestedExtraStreamTypes(for: builtWorkout)
         var streamInspectionError: String?
         var postUploadIssues: [PostUploadSyncIssue] = []
+        let activityID: String?
+
+        do {
+            let uploadResponse = try await apiClient.uploadWorkoutFile(prepared.fileURL, params: uploadParams)
+            if let primaryActivityID = uploadResponse.primaryActivityID {
+                activityID = primaryActivityID
+            } else {
+                activityID = await recoverUploadedActivityID(for: builtWorkout)
+            }
+        } catch {
+            guard Self.isRequestTimeout(error),
+                  let recoveredActivityID = await recoverUploadedActivityID(for: builtWorkout) else {
+                throw error
+            }
+
+            activityID = recoveredActivityID
+        }
 
         if let activityID {
             if pairedEventID == nil, plannedEventLookupError != nil {
@@ -1154,8 +1169,7 @@ final class HealthKitManager: ObservableObject {
             do {
                 try await apiClient.updateActivity(
                     activityID: activityID,
-                    perceivedExertion: builtWorkout.intervalsPerceivedExertion,
-                    sessionRPE: builtWorkout.intervalsSessionRPE
+                    perceivedExertion: builtWorkout.intervalsPerceivedExertion
                 )
             } catch {
                 postUploadIssues.append(
@@ -1822,6 +1836,39 @@ final class HealthKitManager: ObservableObject {
         params["description"] = description
 
         return params
+    }
+
+    private func recoverUploadedActivityID(for workout: WorkoutModel) async -> String? {
+        let calendar = Calendar.autoupdatingCurrent
+        let oldest = calendar.date(byAdding: .day, value: -1, to: workout.startDate) ?? workout.startDate
+        let newest = calendar.date(byAdding: .day, value: 1, to: workout.endDate) ?? workout.endDate
+
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .seconds(2))
+            }
+
+            guard !Task.isCancelled else {
+                return nil
+            }
+
+            guard let remoteActivities = try? await apiClient.listActivities(
+                oldest: oldest,
+                newest: newest,
+                limit: 200
+            ) else {
+                continue
+            }
+
+            // A timed-out upload can still finish server-side; external_id is our breadcrumb trail.
+            if let recoveredActivityID = remoteActivities.first(where: {
+                $0.deleted != true && $0.externalID == workout.externalID
+            })?.id {
+                return recoveredActivityID
+            }
+        }
+
+        return nil
     }
 
     private func explicitPlannedEventID(for workout: WorkoutModel) async throws -> Int? {
@@ -3481,6 +3528,11 @@ final class HealthKitManager: ObservableObject {
 
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    private static func isRequestTimeout(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
     }
 }
 

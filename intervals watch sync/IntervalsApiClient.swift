@@ -112,17 +112,15 @@ private struct IntervalsActivityUpdatePayload: Encodable {
     let type: String?
     let pairedEventID: Int?
     let perceivedExertion: Double?
-    let sessionRPE: Int?
 
     var hasContent: Bool {
-        type != nil || pairedEventID != nil || perceivedExertion != nil || sessionRPE != nil
+        type != nil || pairedEventID != nil || perceivedExertion != nil
     }
 
     enum CodingKeys: String, CodingKey {
         case type
         case pairedEventID = "paired_event_id"
         case perceivedExertion = "perceived_exertion"
-        case sessionRPE = "session_rpe"
     }
 }
 
@@ -211,7 +209,8 @@ final class IntervalsApiClient {
             .map { URLQueryItem(name: $0.key, value: $0.value) }
 
         let boundary = "WorkoutBridge-\(UUID().uuidString)"
-        var request = try makeRequest(url: components.url!, method: "POST")
+        // File uploads can take meaningfully longer than the snappier metadata calls.
+        var request = try makeRequest(url: components.url!, method: "POST", timeoutInterval: 300)
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = makeMultipartBody(
             boundary: boundary,
@@ -405,8 +404,7 @@ final class IntervalsApiClient {
         activityID: String,
         type: String? = nil,
         pairedEventID: Int? = nil,
-        perceivedExertion: Double? = nil,
-        sessionRPE: Int? = nil
+        perceivedExertion: Double? = nil
     ) async throws {
         guard IntervalsConfiguration.isConfigured else {
             throw ClientError.missingConfiguration
@@ -415,8 +413,7 @@ final class IntervalsApiClient {
         let payload = IntervalsActivityUpdatePayload(
             type: type,
             pairedEventID: pairedEventID,
-            perceivedExertion: perceivedExertion,
-            sessionRPE: sessionRPE
+            perceivedExertion: perceivedExertion
         )
         guard payload.hasContent else {
             return
@@ -440,9 +437,6 @@ final class IntervalsApiClient {
         }
         if let perceivedExertion {
             updatedFields.append("perceived_exertion=\(perceivedExertion)")
-        }
-        if let sessionRPE {
-            updatedFields.append("session_rpe=\(sessionRPE)")
         }
 
         let (data, httpResponse) = try await send(
@@ -609,10 +603,10 @@ final class IntervalsApiClient {
         )
     }
 
-    private func makeRequest(url: URL, method: String) throws -> URLRequest {
+    private func makeRequest(url: URL, method: String, timeoutInterval: TimeInterval = 120) throws -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 120
+        request.timeoutInterval = timeoutInterval
         request.setValue(try basicAuthorizationHeader(), forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
