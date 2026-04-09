@@ -1085,7 +1085,13 @@ final class HealthKitManager: ObservableObject {
         shouldUploadWellness: Bool
     ) async throws -> WorkoutModel {
         let builtWorkout = prepared.workout
-        let pairedEventID = try? await explicitPlannedEventID(for: builtWorkout)
+        var pairedEventID: Int?
+        var plannedEventLookupError: Error?
+        do {
+            pairedEventID = try await explicitPlannedEventID(for: builtWorkout)
+        } catch {
+            plannedEventLookupError = error
+        }
         let uploadParams = workoutUploadParameters(for: builtWorkout)
         workoutStore.markUploadStarted(for: builtWorkout.healthKitUUID)
         setProgress(label: uploadLabel, fraction: uploadFraction)
@@ -1096,6 +1102,16 @@ final class HealthKitManager: ObservableObject {
         var postUploadIssues: [PostUploadSyncIssue] = []
 
         if let activityID {
+            if pairedEventID == nil, plannedEventLookupError != nil {
+                do {
+                    // Retry once after upload so a transient event-list hiccup does not orphan the run.
+                    pairedEventID = try await explicitPlannedEventID(for: builtWorkout)
+                    plannedEventLookupError = nil
+                } catch {
+                    plannedEventLookupError = error
+                }
+            }
+
             do {
                 try await apiClient.updateActivity(
                     activityID: activityID,
@@ -1124,6 +1140,15 @@ final class HealthKitManager: ObservableObject {
                         )
                     )
                 }
+            }
+
+            if let plannedEventLookupError {
+                postUploadIssues.append(
+                    PostUploadSyncIssue(
+                        userMessage: "Planned workout lookup failed for \(builtWorkout.displayName).",
+                        logMessage: "Workout uploaded, but planned workout lookup failed for \(builtWorkout.displayName): \(plannedEventLookupError.localizedDescription)"
+                    )
+                )
             }
 
             do {
@@ -1180,6 +1205,12 @@ final class HealthKitManager: ObservableObject {
                 accepted: [],
                 available: [],
                 error: "Intervals did not return an activity ID for stream inspection."
+            )
+            postUploadIssues.append(
+                PostUploadSyncIssue(
+                    userMessage: "Intervals did not return an activity ID for \(builtWorkout.displayName).",
+                    logMessage: "Workout uploaded, but Intervals did not return an activity ID for \(builtWorkout.displayName). Planned workout pairing and stream sync were skipped."
+                )
             )
         }
 

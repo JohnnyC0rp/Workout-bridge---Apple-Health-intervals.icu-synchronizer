@@ -67,6 +67,7 @@ struct IntervalsListedActivity: Decodable {
     let name: String?
     let type: String?
     let startDateLocal: String?
+    let pairedEventID: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -75,6 +76,7 @@ struct IntervalsListedActivity: Decodable {
         case name
         case type
         case startDateLocal = "start_date_local"
+        case pairedEventID = "paired_event_id"
     }
 }
 
